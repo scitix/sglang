@@ -218,6 +218,7 @@ from sglang.srt.utils.hf_transformers_utils import (
 )
 from sglang.srt.utils.network import get_zmq_socket
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+from sglang.srt.utils.uvm_utils import init_uvm_tensor_allocator
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
 if is_mps():
@@ -782,6 +783,17 @@ class Scheduler(
 
         embedding_cache_size = envs.SGLANG_VLM_CACHE_SIZE_MB.get()
         init_mm_embedding_cache(embedding_cache_size * 1024 * 1024)
+
+        # After KV cache and related memory pools are initialized, optionally
+        # initialize the per-process UVM tensor allocator on this GPU.
+        uvm_size_gb = getattr(self.server_args, "uvm_pool_size_gb", None)
+        if uvm_size_gb is not None and uvm_size_gb > 0:
+            try:
+                init_uvm_tensor_allocator(size_gb=uvm_size_gb, device_id=self.gpu_id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to initialize UVM tensor allocator on GPU {self.gpu_id}: {e}"
+                )
 
     def init_running_status(self):
         self.waiting_queue: List[Req] = []
@@ -3345,6 +3357,9 @@ def run_scheduler_process(
         logger.info(f"auto get NUMA node {numa_node} for GPU {gpu_id}")
     if numa_node is not None and not envs.SGLANG_NUMA_BIND_V2.get():
         numa_bind_to_node(numa_node)
+
+    # After NUMA binding, bind CUDA to this TP subprocess GPU.
+    torch.cuda.set_device(gpu_id)
 
     # Set up tracing
     if server_args.enable_trace:

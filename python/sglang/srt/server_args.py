@@ -334,6 +334,7 @@ class ServerArgs:
 
     # Memory and scheduling
     mem_fraction_static: Optional[float] = None
+    uvm_pool_size_gb: Optional[float] = None
     max_running_requests: Optional[int] = None
     max_queued_requests: Optional[int] = None
     max_total_tokens: Optional[int] = None
@@ -3726,6 +3727,16 @@ class ServerArgs:
             type=int,
             default=ServerArgs.page_size,
             help="The number of tokens in a page.",
+        )
+        parser.add_argument(
+            "--uvm-pool-size-gb",
+            type=float,
+            default=ServerArgs.uvm_pool_size_gb,
+            help=(
+                "Size (in GB) of the Unified Virtual Memory tensor pool to allocate "
+                "per tensor-parallel scheduler subprocess GPU. "
+                "If not set or set to 0, the UVM allocator will be disabled."
+            ),
         )
         parser.add_argument(
             "--hybrid-kvcache-ratio",

@@ -40,6 +40,7 @@ from sglang.srt.utils import (
     is_xpu,
     set_weight_attrs,
 )
+from sglang.srt.utils.uvm_utils import get_uvm_tensor_allocator
 from sglang.utils import resolve_obj_by_qualname
 
 _is_cuda = is_cuda()
@@ -73,7 +74,11 @@ class SiluAndMul(MultiPlatformOp):
     def forward_cuda(self, x: torch.Tensor) -> torch.Tensor:
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)
-        out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
+        allocator = get_uvm_tensor_allocator()
+        if allocator is not None and x.is_cuda and x.device.index == allocator.device_id:
+            out = allocator.empty(output_shape, dtype=x.dtype)
+        else:
+            out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
         silu_and_mul(x, out)
         return out
 
@@ -104,7 +109,11 @@ class GeluAndMul(MultiPlatformOp):
     def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
         d = x.shape[-1] // 2
         output_shape = x.shape[:-1] + (d,)
-        out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
+        allocator = get_uvm_tensor_allocator()
+        if allocator is not None and x.is_cuda and x.device.index == allocator.device_id:
+            out = allocator.empty(output_shape, dtype=x.dtype)
+        else:
+            out = torch.empty(output_shape, dtype=x.dtype, device=x.device)
         if self.approximate == "tanh":
             gelu_tanh_and_mul(x, out)
         elif self.approximate == "none":
