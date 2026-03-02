@@ -4,9 +4,9 @@ This document describes how to use SiMM as the L3 KV cache for SGLang.
 
 ## About SiMM
 
-SiMM(Scitix In-Memory Middleware) is a distributed, high-performance, elastic cache acceleration layer for all AI workloads.
+SiMM(Scalable In-Memory Middleware) is a distributed, high-performance, elastic cache acceleration layer for all AI workloads.
 
-For more details about SiMM, please refer to [SiMM project]() and [SiMM documents]().
+For more details about SiMM, please refer to [SiMM project](https://github.com/scitix/SiMM) and [SiMM documents](https://github.com/scitix/SiMM/tree/main/docs).
 
 ### SiMM & SGLang HiCache
 
@@ -18,7 +18,7 @@ When a cache miss occurs in L1 and L2, HiCache automatically fetches the require
 
 **from source**
 
-For more details, please refer to [SiMM official installation guide]().
+For more details, please refer to [SiMM official installation guide](https://github.com/scitix/SiMM/blob/main/README.md).
 
 ## Deployment
 
@@ -26,7 +26,7 @@ For more details, please refer to [SiMM official installation guide]().
 
 Before launch `SGLang server` with SiMM, you should launch SiMM `cluster manager service` and `data server service`.
 
-You can visit [SiMM official deploy guide]() and deploy SiMM on your K8S cluster with RDMA network.
+You can visit [SiMM official deploy guide](https://github.com/scitix/SiMM/blob/main/docs/deploy_guide.md) and deploy SiMM on your K8S cluster with RDMA network.
 
 **Start the `SGLang server` with SiMM enabled:**
 
