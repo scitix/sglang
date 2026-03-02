@@ -1278,13 +1278,30 @@ class ServerArgs:
             if model_config.is_multimodal and not self.language_only:
                 self.adjust_mem_fraction_for_vlm(model_config)
 
-        # If symm mem is enabled and prealloc size is not set, set it to 4GB
-        if self.enable_symm_mem and not envs.SGLANG_SYMM_MEM_PREALLOC_GB_SIZE.is_set():
-            envs.SGLANG_SYMM_MEM_PREALLOC_GB_SIZE.set(4)
-            logger.warning(
-                "Symmetric memory is enabled, setting symmetric memory prealloc size to 4GB as default."
-                "Use environment variable SGLANG_SYMM_MEM_PREALLOC_GB_SIZE to change the prealloc size."
+            # If symm mem is enabled and prealloc size is not set, set it to 4GB
+            if (
+                self.enable_symm_mem
+                and not envs.SGLANG_SYMM_MEM_PREALLOC_GB_SIZE.is_set()
+            ):
+                envs.SGLANG_SYMM_MEM_PREALLOC_GB_SIZE.set(4)
+                logger.warning(
+                    "Symmetric memory is enabled, setting symmetric memory prealloc size to 4GB as default."
+                    "Use environment variable SGLANG_SYMM_MEM_PREALLOC_GB_SIZE to change the prealloc size."
+                )
+        else:
+            # Constant meta data (e.g., from attention backend)
+            reserved_mem = 2 * 1024 + 512
+            # For activation during large prefill
+            if self.chunked_prefill_size > 0:
+                reserved_mem += max(self.chunked_prefill_size, 2048) * 0.15
+            else:
+                reserved_mem += max(self.max_prefill_tokens, 2048) * 0.15
+            max_mem_fraction_static = (
+                round((gpu_mem - reserved_mem) / gpu_mem, 3)
+                if gpu_mem is not None
+                else 0.88
             )
+            self.mem_fraction_static = min(self.mem_fraction_static, max_mem_fraction_static)
 
     def _generate_cuda_graph_batch_sizes(self):
         """
