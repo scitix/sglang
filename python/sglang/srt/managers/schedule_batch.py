@@ -641,6 +641,7 @@ class Req(ReqDllmMixin):
         self.last_host_node: Any = None
         self.last_host_backup_node: Any = None
         self.host_hit_length = 0
+        self.ghost_hit_length = 0  # tokens covered by Ghost nodes (L3 reachable)
         # Tokens loaded from storage backend (L3) during prefetch for this request
         self.storage_hit_length = 0
         # The node to lock until for swa radix tree lock ref
@@ -893,6 +894,7 @@ class Req(ReqDllmMixin):
                 self.last_host_node,
                 self.last_host_backup_node,
                 self.host_hit_length,
+                self.ghost_hit_length,
                 self.mamba_branching_seqlen,
             ) = (
                 match_result.device_indices,
@@ -900,6 +902,7 @@ class Req(ReqDllmMixin):
                 match_result.last_host_node,
                 match_result.last_host_backup_node,
                 match_result.host_hit_length,
+                match_result.ghost_hit_length,
                 match_result.mamba_branching_seqlen,
             )
             if match_result.cache_protected_len is not None:

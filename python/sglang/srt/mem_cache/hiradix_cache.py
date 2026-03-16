@@ -663,6 +663,7 @@ class HiRadixCache(RadixCache):
         )
         self.ongoing_backup[operation_id] = node
         node.protect_host()
+        node.storage_backed = True  # mark that L3 storage has data for this node
 
     def _inc_hit_count(self, node: TreeNode, chunked=False):
         # skip the hit count update for chunked requests
@@ -983,16 +984,23 @@ class HiRadixCache(RadixCache):
             self._record_remove_event(x)
             num_evicted += self.cache_controller.evict_host(x.host_value)
 
-            key = self.get_child_key_fn(x.key)
-            v = x.parent.children.pop(key, None)
-            assert v == x, f"parent does not have child key, {key}"
             if x in self.evictable_host_leaves:
                 self.evictable_host_leaves.remove(x)
-            self._update_host_leaf_status(x.parent)
 
-            if len(x.parent.children) == 0 and x.parent.evicted:
-                new_priority = self.eviction_strategy.get_priority(x.parent)
-                heapq.heappush(eviction_heap, (new_priority, x.parent))
+            if x.storage_backed and x.hash_value is not None:
+                # Ghost node: keep in tree as L3 index, just clear host_value
+                x.host_value = None
+            else:
+                # No L3 data: remove from tree entirely (original behavior)
+                x.host_value = None
+                key = self.get_child_key_fn(x.key)
+                v = x.parent.children.pop(key, None)
+                assert v == x, f"parent does not have child key, {key}"
+                self._update_host_leaf_status(x.parent)
+
+                if len(x.parent.children) == 0 and x.parent.evicted:
+                    new_priority = self.eviction_strategy.get_priority(x.parent)
+                    heapq.heappush(eviction_heap, (new_priority, x.parent))
 
     def load_back(
         self, node: TreeNode, mem_quota: Optional[int] = None
@@ -1278,11 +1286,17 @@ class HiRadixCache(RadixCache):
             value = empty_value
 
         host_hit_length = 0
+        ghost_hit_length = 0
         last_host_node = last_node
         while last_node.evicted:
-            host_hit_length += len(last_node.host_value)
+            if last_node.backuped:
+                # L2 hit: host_value present, can load_back
+                host_hit_length += len(last_node.host_value)
+            elif last_node.storage_backed and last_node.hash_value is not None:
+                # Ghost node: L1/L2 evicted but L3 has data
+                ghost_hit_length += len(last_node.key)
             last_node = last_node.parent
-        while not last_host_node.backuped:
+        while not last_host_node.backuped and last_host_node.parent is not None:
             last_host_node = last_host_node.parent
 
         return MatchResult(
@@ -1290,6 +1304,7 @@ class HiRadixCache(RadixCache):
             last_device_node=last_node,
             last_host_node=last_host_node,
             host_hit_length=host_hit_length,
+            ghost_hit_length=ghost_hit_length,
         )
 
     def prefetch_from_storage(
@@ -1354,10 +1369,18 @@ class HiRadixCache(RadixCache):
             if self._is_pinned(node):
                 node.pin_expiry = time.monotonic() + node.pin_ttl
             prefix_len = self.key_match_fn(node.key, key)
+
+            if node.evicted and not node.backuped and node.storage_backed:
+                # Ghost node recovery: assign prefetched host pages to this node
+                node.host_value = host_value[:prefix_len].clone()
+                self._update_host_leaf_status(node)
+                # Do NOT count in matched_length: caller would free these pages otherwise
+            else:
+                matched_length += prefix_len
+
             key = key[prefix_len:]
             host_value = host_value[prefix_len:]
             hash_value = hash_value[prefix_len // self.page_size :]
-            matched_length += prefix_len
 
             if prefix_len < len(node.key):
                 new_node = self._split_node(node.key, node, prefix_len)
@@ -1436,6 +1459,7 @@ class HiRadixCache(RadixCache):
         new_node.hash_value, child.hash_value = split_node_hash_value(
             child.hash_value, split_len, self.page_size
         )
+        new_node.storage_backed = child.storage_backed  # propagate Ghost status
         child.parent = new_node
         child.key = child.key[split_len:]
         new_node.parent.children[self.get_child_key_fn(key)] = new_node

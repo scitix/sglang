@@ -142,6 +142,7 @@ class TreeNode:
         self.hash_value: Optional[List[str]] = None
         # priority for priority-aware eviction
         self.priority = priority
+        self.storage_backed: bool = False  # whether L3 storage has data for this node
 
         self.id = TreeNode.counter if id is None else id
         TreeNode.counter += 1
