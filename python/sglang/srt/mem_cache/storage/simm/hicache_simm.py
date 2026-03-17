@@ -7,10 +7,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 
@@ -25,16 +22,12 @@ from sglang.srt.mem_cache.memory_pool_host import HostKVCache
 try:
     from simm.kv import BlockView, Store, register_mr, set_flag
 except ImportError as e:
-    # TODO: add install guide after SiMM opensource
     raise ImportError(
-        "Please install simm by following the instructions at "
+        "Please install simm by following the instructions at https://github.com/scitix/SiMM "
         "to run SGLang with SimmConnector."
     ) from e
 
 SGLANG_HICACHE_SIMM_JSON_ENV_VAR = "SGLANG_HICACHE_SIMM_CONFIG_PATH"
-
-DEFAULT_LOCAL_BUFFER_SIZE = 16 * 1024 * 1024  # 16 MB
-SETUP_TIMEOUT = 600  # 10min
 
 logger = logging.getLogger(__name__)
 
