@@ -18,6 +18,25 @@ When a cache miss occurs in L1 and L2, HiCache automatically fetches the require
 
 **from source**
 
+Clone SiMM project:
+
+```bash
+git clone https://github.com/scitix/SiMM --recursive
+```
+
+Install dependencies:
+
+```bash
+cd SiMM
+bash configure.sh
+```
+
+Build and install SiMM:
+
+```bash
+bash build.sh --mode=release --clean
+```
+
 For more details, please refer to [SiMM official installation guide](https://github.com/scitix/SiMM/blob/main/README.md).
 
 ## Deployment
