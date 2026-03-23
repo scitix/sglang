@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import gc
 import inspect
@@ -188,6 +189,7 @@ from sglang.srt.utils.patch_torch import (
     register_sgl_tp_rank,
 )
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
+import sglang.srt.utils.uvm_patch as uvm_patch
 from sglang.srt.utils.weight_checker import WeightChecker
 from sglang.srt.weight_sync.tensor_bucket import (
     FlattenedTensorBucket,
@@ -2596,28 +2598,35 @@ class ModelRunner(ModelRunnerKVCacheMixin):
         if forward_batch.out_cache_loc_swa is not None:
             self.token_to_kv_pool.set_swa_loc(forward_batch.out_cache_loc_swa)
 
-        if forward_batch.forward_mode.is_decode():
-            ret = self.forward_decode(
-                forward_batch,
-                skip_attn_backend_init=skip_attn_backend_init,
-                pp_proxy_tensors=pp_proxy_tensors,
-            )
-        elif forward_batch.forward_mode.is_split_prefill():
-            ret = self.forward_split_prefill(
-                forward_batch,
-                reinit_attn_backend=reinit_attn_backend,
-                forward_count=split_forward_count,
-            )
-        elif forward_batch.forward_mode.is_extend(include_draft_extend_v2=True):
-            ret, can_run_graph = self.forward_extend(
-                forward_batch,
-                skip_attn_backend_init=skip_attn_backend_init,
-                pp_proxy_tensors=pp_proxy_tensors,
-            )
-        elif forward_batch.forward_mode.is_idle():
-            ret = self.forward_idle(forward_batch, pp_proxy_tensors=pp_proxy_tensors)
-        else:
-            raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")
+        _uvm_pool = uvm_patch.get_pool()
+        _pool_ctx = (
+            torch.cuda.use_mem_pool(_uvm_pool)
+            if _uvm_pool is not None
+            else contextlib.nullcontext()
+        )
+        with _pool_ctx:
+            if forward_batch.forward_mode.is_decode():
+                ret = self.forward_decode(
+                    forward_batch,
+                    skip_attn_backend_init=skip_attn_backend_init,
+                    pp_proxy_tensors=pp_proxy_tensors,
+                )
+            elif forward_batch.forward_mode.is_split_prefill():
+                ret = self.forward_split_prefill(
+                    forward_batch,
+                    reinit_attn_backend=reinit_attn_backend,
+                    forward_count=split_forward_count,
+                )
+            elif forward_batch.forward_mode.is_extend(include_draft_extend_v2=True):
+                ret, can_run_graph = self.forward_extend(
+                    forward_batch,
+                    skip_attn_backend_init=skip_attn_backend_init,
+                    pp_proxy_tensors=pp_proxy_tensors,
+                )
+            elif forward_batch.forward_mode.is_idle():
+                ret = self.forward_idle(forward_batch, pp_proxy_tensors=pp_proxy_tensors)
+            else:
+                raise ValueError(f"Invalid forward mode: {forward_batch.forward_mode}")
 
         if (
             forward_batch.global_num_tokens_cpu is not None

@@ -218,7 +218,7 @@ from sglang.srt.utils.hf_transformers_utils import (
 )
 from sglang.srt.utils.network import get_zmq_socket
 from sglang.srt.utils.torch_memory_saver_adapter import TorchMemorySaverAdapter
-from sglang.srt.utils.uvm_utils import init_uvm_tensor_allocator
+import sglang.srt.utils.uvm_patch as uvm_patch
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
 if is_mps():
@@ -785,15 +785,20 @@ class Scheduler(
         init_mm_embedding_cache(embedding_cache_size * 1024 * 1024)
 
         # After KV cache and related memory pools are initialized, optionally
-        # initialize the per-process UVM tensor allocator on this GPU.
-        uvm_size_gb = getattr(self.server_args, "uvm_pool_size_gb", None)
-        if uvm_size_gb is not None and uvm_size_gb > 0:
+        # enable UVM for activation tensors.  A single cudaMallocManaged pool is
+        # allocated here (before any inference kernel runs) and advised with
+        # PreferredLocation=CPU + AccessedBy=GPU so pages remain in CPU RAM.
+        pool_size_gb = getattr(self.server_args, "uvm_pool_size_gb", 0.0)
+        if pool_size_gb > 0:
             try:
-                init_uvm_tensor_allocator(size_gb=uvm_size_gb, device_id=self.gpu_id)
-            except Exception as e:
-                logger.error(
-                    f"Failed to initialize UVM tensor allocator on GPU {self.gpu_id}: {e}"
+                uvm_patch.enable(pool_size_gb=pool_size_gb, device=self.gpu_id)
+                logger.info(
+                    "UVM activation allocator enabled on GPU %d (pool=%.1f GB)",
+                    self.gpu_id, pool_size_gb,
                 )
+            except Exception as e:
+                logger.error("Failed to enable UVM allocator on GPU %d: %s",
+                             self.gpu_id, e)
 
     def init_running_status(self):
         self.waiting_queue: List[Req] = []

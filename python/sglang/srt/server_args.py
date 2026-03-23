@@ -334,7 +334,7 @@ class ServerArgs:
 
     # Memory and scheduling
     mem_fraction_static: Optional[float] = None
-    uvm_pool_size_gb: Optional[float] = None
+    uvm_pool_size_gb: float = 0.0
     max_running_requests: Optional[int] = None
     max_queued_requests: Optional[int] = None
     max_total_tokens: Optional[int] = None
@@ -1190,7 +1190,7 @@ class ServerArgs:
             if self.cuda_graph_max_bs is None:
                 self.cuda_graph_max_bs = 160
 
-        # Set cuda graph batch sizes
+        # ── 2. Derive CUDA graph batch sizes ───────────────────────────────
         if self.cuda_graph_bs is None:
             self.cuda_graph_bs = self._generate_cuda_graph_batch_sizes()
         else:
@@ -1223,51 +1223,21 @@ class ServerArgs:
                 self._generate_piecewise_cuda_graph_tokens()
             )
 
+        # ── 3. Compute mem_fraction_static ─────────────────────────────────
+        # Non-activation constants (CUDA graphs, TP/PP, speculative, etc.) are
+        # shared between both code paths; only the activation coefficient differs.
+        base_reserved = self._compute_non_activation_reserved_mem(gpu_mem)
+
         if self.mem_fraction_static is None:
-            # Constant meta data (e.g., from attention backend)
-            reserved_mem = 512
-            # For activation during large prefill
+            # Activation coefficient 1.5: conservative heuristic for auto-compute.
+            # Uses chunked_prefill_size when enabled (bounds a single sequence's chunk),
+            # otherwise falls back to max_prefill_tokens.
             if self.chunked_prefill_size > 0:
-                reserved_mem += max(self.chunked_prefill_size, 2048) * 1.5
+                activation_reserved = max(self.chunked_prefill_size, 2048) * 1.5
             else:
-                reserved_mem += max(self.max_prefill_tokens, 2048) * 1.5
-            # For cuda graphs
-            reserved_mem += self.cuda_graph_max_bs * 2
-            # Some adjustments for large parallel size
-            reserved_mem += self.tp_size * self.pp_size / 8 * 1024
-
-            if self.enable_dp_attention:
-                # DP attention needs more padding for some operations
-                reserved_mem += self.cuda_graph_max_bs * self.dp_size * 3
-
-                # DP attention uses much more memory for large cuda graph max bs,
-                # likely due to some inefficiencies in torch allocator or our implementation.
-                # So we need to reserve more memory.
-                if self.cuda_graph_max_bs > 300:
-                    reserved_mem += self.cuda_graph_max_bs * self.dp_size * 1.5
-
-            # For piecewise cuda graphs
-            if not self.disable_piecewise_cuda_graph:
-                if not self.use_mla_backend():
-                    # Only calculate the memory overhead for Non-Torch Memory use since the Torch Memory can be reused with Cuda Graph Capture
-                    reserved_mem += len(self.piecewise_cuda_graph_tokens) * 8
-                else:
-                    # For MLA backend the memory overhead is much higher than expected with fa3
-                    reserved_mem += 1.5 * 1024
-
-            if gpu_mem is not None and gpu_mem > 60 * 1024:
-                reserved_mem = max(reserved_mem, 10 * 1024)
-
-            if self.speculative_algorithm is not None:
-                if self.speculative_algorithm == "STANDALONE":
-                    # standalonedraft model and cuda graphs
-                    reserved_mem += 6 * 1024
-                elif self.speculative_algorithm != "NGRAM":
-                    # eagle draft models and cuda graphs
-                    reserved_mem += 4 * 1024
-
+                activation_reserved = max(self.max_prefill_tokens, 2048) * 1.5
             self.mem_fraction_static = (
-                round((gpu_mem - reserved_mem) / gpu_mem, 3)
+                round((gpu_mem - base_reserved - activation_reserved) / gpu_mem, 3)
                 if gpu_mem is not None
                 else 0.88
             )
@@ -1289,19 +1259,55 @@ class ServerArgs:
                     "Use environment variable SGLANG_SYMM_MEM_PREALLOC_GB_SIZE to change the prealloc size."
                 )
         else:
-            # Constant meta data (e.g., from attention backend)
-            reserved_mem = 2 * 1024 + 512
-            # For activation during large prefill
-            if self.chunked_prefill_size > 0:
-                reserved_mem += max(self.chunked_prefill_size, 2048) * 0.15
-            else:
-                reserved_mem += max(self.max_prefill_tokens, 2048) * 0.15
+            # User specified --mem-fraction-static; cap it to prevent OOM from non-activation
+            # overhead (CUDA graphs, TP/PP, etc.).  Activation memory is excluded here because
+            # activations are allocated in UVM (CPU RAM) and do not consume GPU memory.
             max_mem_fraction_static = (
-                round((gpu_mem - reserved_mem) / gpu_mem, 3)
+                round((gpu_mem - base_reserved) / gpu_mem, 3)
                 if gpu_mem is not None
-                else 0.88
+                else 0.98
             )
             self.mem_fraction_static = min(self.mem_fraction_static, max_mem_fraction_static)
+
+    def _compute_non_activation_reserved_mem(self, gpu_mem) -> float:
+        """Compute reserved memory (MiB) for CUDA graphs, TP/PP overhead, and speculative
+        decoding — everything except prefill activation memory.
+
+        Shared between the auto-compute and user-specified mem_fraction_static code paths
+        so they only differ in the activation coefficient.
+        """
+        reserved = 512  # Constant meta data (e.g., from attention backend)
+        # Decode CUDA graphs
+        reserved += self.cuda_graph_max_bs * 2
+        # Large parallel size adjustment
+        reserved += self.tp_size * self.pp_size / 8 * 1024
+        if self.enable_dp_attention:
+            # DP attention needs more padding for some operations
+            reserved += self.cuda_graph_max_bs * self.dp_size * 3
+            # DP attention uses much more memory for large cuda_graph_max_bs,
+            # likely due to some inefficiencies in torch allocator or our implementation.
+            if self.cuda_graph_max_bs > 300:
+                reserved += self.cuda_graph_max_bs * self.dp_size * 1.5
+        # Piecewise prefill CUDA graphs
+        if not self.disable_piecewise_cuda_graph:
+            if not self.use_mla_backend():
+                # Only count Non-Torch Memory since Torch Memory can be reused with CUDA Graph Capture
+                reserved += len(self.piecewise_cuda_graph_tokens) * 8
+            else:
+                # MLA backend memory overhead is much higher than expected with fa3
+                reserved += 1.5 * 1024
+        # Floor for large GPUs
+        if gpu_mem is not None and gpu_mem > 60 * 1024:
+            reserved = max(reserved, 10 * 1024)
+        # Speculative decoding overhead
+        if self.speculative_algorithm is not None:
+            if self.speculative_algorithm == "STANDALONE":
+                # Standalone draft model and cuda graphs
+                reserved += 6 * 1024
+            elif self.speculative_algorithm != "NGRAM":
+                # Eagle draft models and cuda graphs
+                reserved += 4 * 1024
+        return reserved
 
     def _generate_cuda_graph_batch_sizes(self):
         """
@@ -3750,9 +3756,11 @@ class ServerArgs:
             type=float,
             default=ServerArgs.uvm_pool_size_gb,
             help=(
-                "Size (in GB) of the Unified Virtual Memory tensor pool to allocate "
-                "per tensor-parallel scheduler subprocess GPU. "
-                "If not set or set to 0, the UVM allocator will be disabled."
+                "Size of the UVM activation pool in GB. When > 0, a pool is "
+                "pre-allocated at startup via cudaMallocManaged with "
+                "PreferredLocation=CPU and AccessedBy=GPU, so activation tensors "
+                "reside in CPU RAM and are accessed by the GPU without page "
+                "migration. Default: %(default)s (disabled)."
             ),
         )
         parser.add_argument(

@@ -567,3 +567,50 @@ install(DIRECTORY "${repo-triton_SOURCE_DIR}/python/triton_kernels/triton_kernel
         DESTINATION "triton_kernels"
         PATTERN ".git*" EXCLUDE
         PATTERN "__pycache__" EXCLUDE)
+
+# ============================ UVM Activation Allocator ============================= #
+# Standalone SHARED library loaded at runtime by uvm_patch.py via ctypes.
+# Depends only on CUDA runtime — no Torch/ATen/CUTLASS headers needed.
+
+set(UVM_CUDA_FLAGS
+    "-O2"
+    "-std=c++17"
+    "-Xcompiler=-fPIC"
+    "-gencode=arch=compute_90,code=sm_90"
+)
+
+if (ENABLE_BELOW_SM90)
+    list(APPEND UVM_CUDA_FLAGS
+        "-gencode=arch=compute_80,code=sm_80"
+        "-gencode=arch=compute_89,code=sm_89"
+    )
+endif()
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.4")
+    list(APPEND UVM_CUDA_FLAGS
+        "-gencode=arch=compute_90a,code=sm_90a"
+    )
+endif()
+
+if ("${CUDA_VERSION}" VERSION_GREATER_EQUAL "12.8" OR SGL_KERNEL_ENABLE_SM100A)
+    list(APPEND UVM_CUDA_FLAGS
+        "-gencode=arch=compute_100a,code=sm_100a"
+        "-gencode=arch=compute_120a,code=sm_120a"
+    )
+endif()
+
+add_library(uvm_allocator SHARED
+    "csrc/memory/uvm_allocator.cu"
+)
+set_target_properties(uvm_allocator PROPERTIES
+    OUTPUT_NAME "uvm_allocator"
+    CUDA_STANDARD 17
+    POSITION_INDEPENDENT_CODE ON
+)
+target_compile_options(uvm_allocator PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:${UVM_CUDA_FLAGS}>
+)
+target_link_libraries(uvm_allocator PRIVATE CUDA::cudart)
+install(TARGETS uvm_allocator
+    LIBRARY DESTINATION "sglang/srt/utils"
+)
